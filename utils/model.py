@@ -9,7 +9,7 @@ from model import FastSpeech2, ScheduledOptim
 
 
 def get_model(args, configs, device, train=False):
-    (preprocess_config, model_config, train_config) = configs
+    (preprocess_config, model_config, train_config, valid_config) = configs
 
     model = FastSpeech2(preprocess_config, model_config).to(device)
     if args.restore_step:

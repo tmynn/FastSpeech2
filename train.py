@@ -5,7 +5,7 @@ import torch
 import yaml
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from utils.model import get_model, get_vocoder, get_param_num
@@ -15,13 +15,24 @@ from dataset import Dataset
 
 from evaluate import evaluate
 
+
+import aim
+from aim.pytorch import track_params_dists, track_gradients_dists
+import numpy as np
+from track_utils import fig_to_img, track_model_graph
+import matplotlib.pyplot as plt
+from chart_studio import plotly
+import chart_studio.plotly as py
+import plotly.tools as tls
+import math
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def main(args, configs):
     print("Prepare training ...")
 
-    preprocess_config, model_config, train_config = configs
+    preprocess_config, model_config, train_config, valid_config = configs
 
     # Get dataset
     dataset = Dataset(
@@ -54,8 +65,8 @@ def main(args, configs):
     val_log_path = os.path.join(train_config["path"]["log_path"], "val")
     os.makedirs(train_log_path, exist_ok=True)
     os.makedirs(val_log_path, exist_ok=True)
-    train_logger = SummaryWriter(train_log_path)
-    val_logger = SummaryWriter(val_log_path)
+    train_logger = None  # SummaryWriter(train_log_path)
+    val_logger = None  # SummaryWriter(val_log_path)
 
     # Training
     step = args.restore_step + 1
@@ -72,10 +83,26 @@ def main(args, configs):
     outer_bar.n = args.restore_step
     outer_bar.update()
 
-    while True:
-        inner_bar = tqdm(total=len(loader), desc="Epoch {}".format(epoch), position=1)
-        for batchs in loader:
-            for batch in batchs:
+    experiment_name = "FS2"
+    if args.aim_server is not None:
+        remote_tracking_server = f'aim://{args.aim_server}'
+        aim_run = aim.Run(experiment=experiment_name,
+                          repo=remote_tracking_server)
+    else:
+        aim_run = aim.Run(experiment=experiment_name)
+
+    aim_run["train_config"] = train_config
+    aim_run["preprocess_config"] = preprocess_config
+    aim_run["model_config"] = model_config
+
+    metadata_graph_metadata = track_model_graph(model)
+    aim_run["metadata_graph_metadata"] = metadata_graph_metadata
+
+    while epoch <= train_config['step']['max_epoch']:
+        inner_bar = tqdm(total=len(loader),
+                         desc="Epoch {}".format(epoch), position=1)
+        for batches in loader:
+            for batch in batches:
                 batch = to_device(batch, device)
 
                 # Forward
@@ -87,61 +114,82 @@ def main(args, configs):
 
                 # Backward
                 total_loss = total_loss / grad_acc_step
+
                 total_loss.backward()
+
                 if step % grad_acc_step == 0:
                     # Clipping gradients to avoid gradient explosion
-                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip_thresh)
 
-                    # Update weights
-                    optimizer.step_and_update_lr()
+                    grad_norm = nn.utils.clip_grad_norm_(
+                        model.parameters(), grad_clip_thresh)
+
+                    if math.isnan(grad_norm):
+                        print("grad_norm is nan. Not Updating.")
+                    else:
+                        optimizer.step_and_update_lr()
                     optimizer.zero_grad()
 
                 if step % log_step == 0:
+
+                    total_loss, mel_loss, postnet_mel_loss, pitch_loss, energy_loss, duration_loss = losses
+
+                    aim_run.track(total_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'total_loss'})
+                    aim_run.track(mel_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'mel_loss'})
+                    aim_run.track(postnet_mel_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'postnet_mel_loss'})
+                    aim_run.track(pitch_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'pitch_loss'})
+                    aim_run.track(energy_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'energy_loss'})
+                    aim_run.track(duration_loss.item(), name="Loss", context={
+                                  'subset': 'train', 'type': 'duration_loss'})
+
                     losses = [l.item() for l in losses]
+
                     message1 = "Step {}/{}, ".format(step, total_step)
                     message2 = "Total Loss: {:.4f}, Mel Loss: {:.4f}, Mel PostNet Loss: {:.4f}, Pitch Loss: {:.4f}, Energy Loss: {:.4f}, Duration Loss: {:.4f}".format(
                         *losses
                     )
+
+                    track_params_dists(model, aim_run)
+                    track_gradients_dists(model, aim_run)
+
+                    # aim_run.track(
+                    #     aim.Text(message1 + message2 + "\n"), name='log_out')
 
                     with open(os.path.join(train_log_path, "log.txt"), "a") as f:
                         f.write(message1 + message2 + "\n")
 
                     outer_bar.write(message1 + message2)
 
-                    log(train_logger, step, losses=losses)
+                    # log(train_logger, step, losses=losses)
 
-                if step % synth_step == 0:
-                    fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
-                        batch,
-                        output,
-                        vocoder,
-                        model_config,
-                        preprocess_config,
-                    )
-                    log(
-                        train_logger,
-                        fig=fig,
-                        tag="Training/step_{}_{}".format(step, tag),
-                    )
-                    sampling_rate = preprocess_config["preprocessing"]["audio"][
-                        "sampling_rate"
-                    ]
-                    log(
-                        train_logger,
-                        audio=wav_reconstruction,
-                        sampling_rate=sampling_rate,
-                        tag="Training/step_{}_{}_reconstructed".format(step, tag),
-                    )
-                    log(
-                        train_logger,
-                        audio=wav_prediction,
-                        sampling_rate=sampling_rate,
-                        tag="Training/step_{}_{}_synthesized".format(step, tag),
-                    )
+                # if step % synth_step == 0:
 
                 if step % val_step == 0:
                     model.eval()
-                    message = evaluate(model, step, configs, val_logger, vocoder)
+                    message = evaluate(model, step, configs,
+                                       val_logger, vocoder, aim_run)
+
+                    val_losses = [float(i.split(":")[1].lstrip(" "))
+                                  for i in message.split(",") if "Loss" in i]
+                    val_total_loss, val_mel_loss, val_postnet_mel_loss, val_pitch_loss, val_energy_loss, val_duration_loss = val_losses
+
+                    aim_run.track(val_total_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'total_loss'})
+                    aim_run.track(val_mel_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'mel_loss'})
+                    aim_run.track(val_postnet_mel_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'postnet_mel_loss'})
+                    aim_run.track(val_pitch_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'pitch_loss'})
+                    aim_run.track(val_energy_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'energy_loss'})
+                    aim_run.track(val_duration_loss, name="Loss", context={
+                                  'subset': 'valid', 'type': 'duration_loss'})
+
                     with open(os.path.join(val_log_path, "log.txt"), "a") as f:
                         f.write(message + "\n")
                     outer_bar.write(message)
@@ -149,6 +197,7 @@ def main(args, configs):
                     model.train()
 
                 if step % save_step == 0:
+                    # TODO - make save path unique
                     torch.save(
                         {
                             "model": model.module.state_dict(),
@@ -185,14 +234,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "-t", "--train_config", type=str, required=True, help="path to train.yaml"
     )
+
+    parser.add_argument(
+        "-v", "--valid_config", type=str, required=True, help="path to valid.yaml"
+    )
+
+    parser.add_argument(
+        "-as", "--aim_server", type=str, default=None, required=False, help="Remote aim server ip:port"
+    )
     args = parser.parse_args()
 
     # Read Config
     preprocess_config = yaml.load(
         open(args.preprocess_config, "r"), Loader=yaml.FullLoader
     )
-    model_config = yaml.load(open(args.model_config, "r"), Loader=yaml.FullLoader)
-    train_config = yaml.load(open(args.train_config, "r"), Loader=yaml.FullLoader)
-    configs = (preprocess_config, model_config, train_config)
+    model_config = yaml.load(
+        open(args.model_config, "r"), Loader=yaml.FullLoader)
+    train_config = yaml.load(
+        open(args.train_config, "r"), Loader=yaml.FullLoader)
+    valid_config = yaml.load(
+        open(args.valid_config, "r"), Loader=yaml.FullLoader)
+    configs = (preprocess_config, model_config, train_config, valid_config)
 
     main(args, configs)

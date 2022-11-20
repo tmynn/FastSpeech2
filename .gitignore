@@ -116,3 +116,6 @@ output/
 *.npy
 TextGrid/
 hifigan/*.pth.tar
+
+data/
+.aim/

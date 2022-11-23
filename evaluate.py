@@ -49,7 +49,7 @@ def evaluate(model, step, configs, logger=None, vocoder=None, aim_run=None):
                 output = model(*(batch[2:]))
 
                 if aim_run:
-                    fig, wav_reconstruction, wav_prediction, tag = synth_one_sample(
+                    fig_synthesized, fig_ground_truth, wav_reconstruction, wav_prediction, tag = synth_one_sample(
                         batch,
                         output,
                         vocoder,
@@ -70,12 +70,19 @@ def evaluate(model, step, configs, logger=None, vocoder=None, aim_run=None):
                     aim_run.track(aim.Text(sample), name='sample_text', context={
                         'sample_id': sample_id})
 
-                    plotly_fig = tls.mpl_to_plotly(fig)
+                    plotly_fig_synthesized = tls.mpl_to_plotly(fig_synthesized)
+                    plotly_fig_ground_truth = tls.mpl_to_plotly(
+                        fig_ground_truth)
 
-                    aim_run.track(aim.Image(fig_to_img(fig)),
-                                  name='Spectrograms',  context={'type': 'MEL', 'sample_id': sample_id})
-                    aim_run.track(aim.Figure(plotly_fig), name='Spectrograms',  context={
-                                  'type': 'MEL Interactive', 'sample_id': sample_id})
+                    aim_run.track([
+                        aim.Image(fig_to_img(fig_synthesized),
+                                  caption='Synthesized'),
+                        aim.Image(fig_to_img(fig_ground_truth),
+                                  caption='Ground-Truth'),
+                    ], name='Spectrograms',  context={'type': 'MEL', 'sample_id': sample_id})
+
+                    aim_run.track(aim.Figure(plotly_fig_synthesized), name='Spectrograms',  context={'type': 'MEL Interactive', 'name': 'Synthesized', 'sample_id': sample_id})
+                    aim_run.track(aim.Figure(plotly_fig_ground_truth), name='Spectrograms',  context={'type': 'MEL Interactive', 'name': 'Ground-Truth', 'sample_id': sample_id})
 
                 # Cal Loss
                 losses = Loss(batch, output)

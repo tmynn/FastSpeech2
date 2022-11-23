@@ -131,14 +131,8 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
         stats = json.load(f)
         stats = stats["pitch"] + stats["energy"][:2]
 
-    fig = plot_mel(
-        [
-            (mel_prediction.cpu().numpy(), pitch, energy),
-            (mel_target.cpu().numpy(), pitch, energy),
-        ],
-        stats,
-        ["Synthetized Spectrogram", "Ground-Truth Spectrogram"],
-    )
+    fig_synthesized = plot_mel((mel_prediction.cpu().numpy(), pitch, energy), stats, "Synthesized Spectrogram")
+    fig_ground_truth = plot_mel((mel_target.cpu().numpy(), pitch, energy), stats, "Ground-Truth Spectrogram")
 
     if vocoder is not None:
         from .model import vocoder_infer
@@ -158,7 +152,7 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
     else:
         wav_reconstruction = wav_prediction = None
 
-    return fig, wav_reconstruction, wav_prediction, basename
+    return fig_synthesized, fig_ground_truth, wav_reconstruction, wav_prediction, basename
 
 
 def synth_samples(targets, predictions, vocoder, model_config, preprocess_config, path):
@@ -210,10 +204,8 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
         wavfile.write(os.path.join(path, "{}.wav".format(basename)), sampling_rate, wav)
 
 
-def plot_mel(data, stats, titles):
-    fig, axes = plt.subplots(len(data), 1, squeeze=False)
-    if titles is None:
-        titles = [None for i in range(len(data))]
+def plot_mel(data, stats, title):
+    fig, axes = plt.subplots(1, 1, squeeze=False)
     pitch_min, pitch_max, pitch_mean, pitch_std, energy_min, energy_max = stats
     pitch_min = pitch_min * pitch_std + pitch_mean
     pitch_max = pitch_max * pitch_std + pitch_mean
@@ -223,41 +215,40 @@ def plot_mel(data, stats, titles):
         ax.set_facecolor("None")
         return ax
 
-    for i in range(len(data)):
-        mel, pitch, energy = data[i]
-        pitch = pitch * pitch_std + pitch_mean
-        axes[i][0].imshow(mel, origin="lower")
-        axes[i][0].set_aspect(2.5, adjustable="box")
-        axes[i][0].set_ylim(0, mel.shape[0])
-        axes[i][0].set_title(titles[i], fontsize="medium")
-        axes[i][0].tick_params(labelsize="x-small", left=False, labelleft=False)
-        axes[i][0].set_anchor("W")
+    mel, pitch, energy = data
+    pitch = pitch * pitch_std + pitch_mean
+    axes[0][0].imshow(mel, origin="lower")
+    axes[0][0].set_aspect(2.5, adjustable="box")
+    axes[0][0].set_ylim(0, mel.shape[0])
+    axes[0][0].set_title(title, fontsize="medium")
+    axes[0][0].tick_params(labelsize="x-small", left=False, labelleft=False)
+    axes[0][0].set_anchor("W")
 
-        ax1 = add_axis(fig, axes[i][0])
-        ax1.plot(pitch, color="tomato")
-        ax1.set_xlim(0, mel.shape[1])
-        ax1.set_ylim(0, pitch_max)
-        ax1.set_ylabel("F0", color="tomato")
-        ax1.tick_params(
-            labelsize="x-small", colors="tomato", bottom=False, labelbottom=False
-        )
+    ax1 = add_axis(fig, axes[0][0])
+    ax1.plot(pitch, color="tomato")
+    ax1.set_xlim(0, mel.shape[1])
+    ax1.set_ylim(0, pitch_max)
+    ax1.set_ylabel("F0", color="tomato")
+    ax1.tick_params(
+        labelsize="x-small", colors="tomato", bottom=False, labelbottom=False
+    )
 
-        ax2 = add_axis(fig, axes[i][0])
-        ax2.plot(energy, color="darkviolet")
-        ax2.set_xlim(0, mel.shape[1])
-        ax2.set_ylim(energy_min, energy_max)
-        ax2.set_ylabel("Energy", color="darkviolet")
-        ax2.yaxis.set_label_position("right")
-        ax2.tick_params(
-            labelsize="x-small",
-            colors="darkviolet",
-            bottom=False,
-            labelbottom=False,
-            left=False,
-            labelleft=False,
-            right=True,
-            labelright=True,
-        )
+    ax2 = add_axis(fig, axes[0][0])
+    ax2.plot(energy, color="darkviolet")
+    ax2.set_xlim(0, mel.shape[1])
+    ax2.set_ylim(energy_min, energy_max)
+    ax2.set_ylabel("Energy", color="darkviolet")
+    ax2.yaxis.set_label_position("right")
+    ax2.tick_params(
+        labelsize="x-small",
+        colors="darkviolet",
+        bottom=False,
+        labelbottom=False,
+        left=False,
+        labelleft=False,
+        right=True,
+        labelright=True,
+    )
 
     return fig
 

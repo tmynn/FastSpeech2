@@ -118,4 +118,4 @@ TextGrid/
 hifigan/*.pth.tar
 
 data/
-.aim/
+.aim*/
